@@ -5,6 +5,8 @@ type Props = {
   state: GameState | null
   selfId: string
   isHost: boolean
+  peerCount: number
+  netHint: string | null
   onReady: () => void
   onStart: () => void
   onLeave: () => void
@@ -15,6 +17,8 @@ export function Lobby({
   state,
   selfId,
   isHost,
+  peerCount,
+  netHint,
   onReady,
   onStart,
   onLeave,
@@ -56,7 +60,13 @@ export function Lobby({
           <h2 className="font-display text-lg text-paper">Crew</h2>
           <span className="text-sm text-paper-dim">{players.length}/6</span>
         </div>
-        {!state && (
+        <p className="text-xs text-paper-dim">
+          P2P links: <span className="text-paper">{peerCount}</span>
+        </p>
+        {netHint && (
+          <p className="animate-pulse text-sm text-ember">{netHint}</p>
+        )}
+        {!state && !netHint && (
           <p className="animate-pulse text-sm text-paper-dim">
             Connecting to host… keep this tab open
           </p>

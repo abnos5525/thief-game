@@ -49,13 +49,17 @@ export function useGame() {
   const [targetId, setTargetId] = useState<string | null>(null)
   const [kickArmed, setKickArmed] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [peerCount, setPeerCount] = useState(0)
+  const [netHint, setNetHint] = useState<string | null>(null)
 
   const sessionRef = useRef<Session | null>(null)
   const stateRef = useRef<GameState | null>(null)
   const selfIdRef = useRef<string | null>(null)
   const unsubsRef = useRef<(() => void)[]>([])
   const helloTimerRef = useRef<number | null>(null)
+  const syncTimerRef = useRef<number | null>(null)
   const profileRef = useRef({ name: '', color })
+  const asHostRef = useRef(false)
 
   stateRef.current = state
   selfIdRef.current = selfId
@@ -89,16 +93,38 @@ export function useGame() {
 
   const sendHello = useCallback(() => {
     const { name: n, color: c } = profileRef.current
-    if (!n) return
-    sessionRef.current?.send({ t: 'hello', name: n, color: c })
+    if (!n || !sessionRef.current) return
+    if (sessionRef.current.getPeers().length === 0) return
+    sessionRef.current.send({ t: 'hello', name: n, color: c })
   }, [])
+
+  const startHelloRetry = useCallback(() => {
+    stopHelloRetry()
+    sendHello()
+    helloTimerRef.current = window.setInterval(() => {
+      const me = selfIdRef.current
+      const cur = stateRef.current
+      if (me && cur?.players[me]) {
+        stopHelloRetry()
+        return
+      }
+      sendHello()
+    }, 700)
+  }, [sendHello, stopHelloRetry])
 
   const clearSession = useCallback(async () => {
     stopHelloRetry()
+    if (syncTimerRef.current != null) {
+      window.clearInterval(syncTimerRef.current)
+      syncTimerRef.current = null
+    }
     unsubsRef.current.forEach((u) => u())
     unsubsRef.current = []
     const s = sessionRef.current
     sessionRef.current = null
+    asHostRef.current = false
+    setPeerCount(0)
+    setNetHint(null)
     if (s) await s.leave()
   }, [stopHelloRetry])
 
@@ -114,6 +140,7 @@ export function useGame() {
   const enterRoom = useCallback(
     async (code: string, asHost: boolean) => {
       setError(null)
+      setNetHint(null)
       const normalized = normalizeRoomCode(code)
       if (!isValidRoomCode(normalized)) {
         setError('Need a 4-character room code.')
@@ -126,7 +153,16 @@ export function useGame() {
       }
 
       await clearSession()
-      const session = createRoomSession({ roomCode: normalized })
+      asHostRef.current = asHost
+
+      let session: Session
+      try {
+        session = createRoomSession({ roomCode: normalized })
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to open room')
+        return
+      }
+
       sessionRef.current = session
       selfIdRef.current = session.selfId
       setSelfId(session.selfId)
@@ -134,19 +170,18 @@ export function useGame() {
       setView('room')
       setState(null)
       stateRef.current = null
+      setNetHint(asHost ? 'Waiting for players…' : 'Looking for host…')
 
-      const startHelloRetry = () => {
-        stopHelloRetry()
-        sendHello()
-        helloTimerRef.current = window.setInterval(() => {
-          const me = selfIdRef.current
-          const cur = stateRef.current
-          if (me && cur?.players[me]) {
-            stopHelloRetry()
-            return
-          }
-          sendHello()
-        }, 800)
+      const onPeerReady = () => {
+        setPeerCount(session.getPeers().length)
+        if (iAmHost() && stateRef.current) {
+          broadcast(stateRef.current)
+          return
+        }
+        if (!asHostRef.current) {
+          setNetHint('Peer found — joining…')
+          startHelloRetry()
+        }
       }
 
       unsubsRef.current = [
@@ -157,7 +192,9 @@ export function useGame() {
           if (msg.t === 'state') {
             stateRef.current = msg.state
             setState(msg.state)
+            setNetHint(null)
             if (msg.state.players[me]) stopHelloRetry()
+            else if (!asHostRef.current) startHelloRetry()
             return
           }
 
@@ -197,15 +234,9 @@ export function useGame() {
           }
           if (next !== cur) setAndBroadcast(next)
         }),
-        session.onPeerJoin(() => {
-          if (iAmHost() && stateRef.current) {
-            broadcast(stateRef.current)
-            return
-          }
-          // Joiner: data channel is up — announce to sticky host (retry until listed).
-          if (!asHost) startHelloRetry()
-        }),
+        session.onPeerJoin(onPeerReady),
         session.onPeerLeave((peerId) => {
+          setPeerCount(session.getPeers().length)
           const cur = stateRef.current
           const me = selfIdRef.current
           if (!cur || !me) return
@@ -215,17 +246,40 @@ export function useGame() {
             return
           }
 
-          // Sticky host left → promote lowest remaining peer.
           if (cur.hostId === peerId) {
             const ids = [me, ...session.getPeers()]
             const hostId = electHost(ids)
             if (hostId === me) {
-              const next = removePlayer({ ...cur, hostId }, peerId)
-              setAndBroadcast(next)
+              setAndBroadcast(removePlayer({ ...cur, hostId }, peerId))
+            } else {
+              setNetHint('Host left — waiting…')
             }
           }
         }),
+        session.onJoinError((message) => {
+          setNetHint(`Connection issue: ${message}`)
+        }),
       ]
+
+      // Poll peers — catches connections even if a join event was missed.
+      syncTimerRef.current = window.setInterval(() => {
+        const s = sessionRef.current
+        if (!s) return
+        const n = s.getPeers().length
+        setPeerCount(n)
+        if (n === 0) return
+
+        if (iAmHost() && stateRef.current) {
+          // Lobby heartbeat so late joiners still get a snapshot.
+          if (stateRef.current.phase === 'lobby') broadcast(stateRef.current)
+          return
+        }
+
+        if (!asHostRef.current) {
+          const me = selfIdRef.current
+          if (!me || !stateRef.current?.players[me]) startHelloRetry()
+        }
+      }, 1000)
 
       if (asHost) {
         const seed = (Math.random() * 1e9) | 0
@@ -234,9 +288,9 @@ export function useGame() {
           blankPlayer(session.selfId, trimmed, color),
         )
         setAndBroadcast(lobby)
-      } else {
-        // Peers already in room (rare race) — hello now; else wait for onPeerJoin.
-        if (session.getPeers().length > 0) startHelloRetry()
+        setNetHint('Share the code — waiting for crew…')
+      } else if (session.getPeers().length > 0) {
+        onPeerReady()
       }
     },
     [
@@ -245,8 +299,8 @@ export function useGame() {
       color,
       iAmHost,
       name,
-      sendHello,
       setAndBroadcast,
+      startHelloRetry,
       stopHelloRetry,
     ],
   )
@@ -293,7 +347,7 @@ export function useGame() {
     void enterRoom(makeRoomCode(), true)
   }, [enterRoom])
 
-  const joinRoom = useCallback(() => {
+  const joinRoomAction = useCallback(() => {
     void enterRoom(joinInput, false)
   }, [enterRoom, joinInput])
 
@@ -392,8 +446,10 @@ export function useGame() {
     kickArmed,
     setKickArmed,
     error,
+    peerCount,
+    netHint,
     createRoom,
-    joinRoom,
+    joinRoom: joinRoomAction,
     leave,
     toggleReady,
     start,

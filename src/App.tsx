@@ -24,6 +24,8 @@ export default function App() {
         state={game.state}
         selfId={game.selfId}
         isHost={game.isHost}
+        peerCount={game.peerCount}
+        netHint={game.netHint}
         onReady={game.toggleReady}
         onStart={game.start}
         onLeave={() => void game.leave()}
