@@ -53,11 +53,19 @@ export function useGame() {
   const sessionRef = useRef<Session | null>(null)
   const stateRef = useRef<GameState | null>(null)
   const selfIdRef = useRef<string | null>(null)
-  const hostRef = useRef(false)
   const unsubsRef = useRef<(() => void)[]>([])
+  const helloTimerRef = useRef<number | null>(null)
+  const profileRef = useRef({ name: '', color })
 
   stateRef.current = state
   selfIdRef.current = selfId
+  profileRef.current = { name: name.trim(), color }
+
+  const iAmHost = useCallback(() => {
+    const me = selfIdRef.current
+    const cur = stateRef.current
+    return !!(me && cur && cur.hostId === me)
+  }, [])
 
   const broadcast = useCallback((next: GameState) => {
     sessionRef.current?.send({ t: 'state', state: next })
@@ -67,35 +75,32 @@ export function useGame() {
     (next: GameState) => {
       stateRef.current = next
       setState(next)
-      if (hostRef.current) broadcast(next)
+      if (next.hostId === selfIdRef.current) broadcast(next)
     },
     [broadcast],
   )
 
-  const refreshHost = useCallback(() => {
-    const session = sessionRef.current
-    const id = selfIdRef.current
-    if (!session || !id) return false
-    const ids = [id, ...session.getPeers()]
-    const hostId = electHost(ids)
-    const wasHost = hostRef.current
-    hostRef.current = hostId === id
-    if (hostRef.current && stateRef.current && stateRef.current.hostId !== hostId) {
-      setAndBroadcast({ ...stateRef.current, hostId })
-    } else if (hostRef.current && !wasHost && stateRef.current) {
-      broadcast(stateRef.current)
+  const stopHelloRetry = useCallback(() => {
+    if (helloTimerRef.current != null) {
+      window.clearInterval(helloTimerRef.current)
+      helloTimerRef.current = null
     }
-    return hostRef.current
-  }, [broadcast, setAndBroadcast])
+  }, [])
+
+  const sendHello = useCallback(() => {
+    const { name: n, color: c } = profileRef.current
+    if (!n) return
+    sessionRef.current?.send({ t: 'hello', name: n, color: c })
+  }, [])
 
   const clearSession = useCallback(async () => {
+    stopHelloRetry()
     unsubsRef.current.forEach((u) => u())
     unsubsRef.current = []
     const s = sessionRef.current
     sessionRef.current = null
-    hostRef.current = false
     if (s) await s.leave()
-  }, [])
+  }, [stopHelloRetry])
 
   const leave = useCallback(async () => {
     await clearSession()
@@ -127,24 +132,44 @@ export function useGame() {
       setSelfId(session.selfId)
       setRoomCode(normalized)
       setView('room')
+      setState(null)
+      stateRef.current = null
+
+      const startHelloRetry = () => {
+        stopHelloRetry()
+        sendHello()
+        helloTimerRef.current = window.setInterval(() => {
+          const me = selfIdRef.current
+          const cur = stateRef.current
+          if (me && cur?.players[me]) {
+            stopHelloRetry()
+            return
+          }
+          sendHello()
+        }, 800)
+      }
 
       unsubsRef.current = [
         session.onMessage((msg: NetMsg, peerId: string) => {
-          const cur = stateRef.current
           const me = selfIdRef.current
           if (!me) return
 
           if (msg.t === 'state') {
             stateRef.current = msg.state
-            hostRef.current = msg.state.hostId === me
             setState(msg.state)
+            if (msg.state.players[me]) stopHelloRetry()
             return
           }
 
-          if (!hostRef.current || !cur) return
+          const cur = stateRef.current
+          if (!cur || cur.hostId !== me) return
 
           let next = cur
           if (msg.t === 'hello') {
+            if (cur.players[peerId]) {
+              broadcast(cur)
+              return
+            }
             next = addPlayer(cur, blankPlayer(peerId, msg.name, msg.color))
           } else if (msg.t === 'ready') {
             next = engineSetReady(cur, peerId, msg.ready)
@@ -173,19 +198,36 @@ export function useGame() {
           if (next !== cur) setAndBroadcast(next)
         }),
         session.onPeerJoin(() => {
-          refreshHost()
-          if (hostRef.current && stateRef.current) broadcast(stateRef.current)
+          if (iAmHost() && stateRef.current) {
+            broadcast(stateRef.current)
+            return
+          }
+          // Joiner: data channel is up — announce to sticky host (retry until listed).
+          if (!asHost) startHelloRetry()
         }),
         session.onPeerLeave((peerId) => {
-          refreshHost()
-          if (hostRef.current && stateRef.current) {
-            setAndBroadcast(removePlayer(stateRef.current, peerId))
+          const cur = stateRef.current
+          const me = selfIdRef.current
+          if (!cur || !me) return
+
+          if (cur.hostId === me) {
+            setAndBroadcast(removePlayer(cur, peerId))
+            return
+          }
+
+          // Sticky host left → promote lowest remaining peer.
+          if (cur.hostId === peerId) {
+            const ids = [me, ...session.getPeers()]
+            const hostId = electHost(ids)
+            if (hostId === me) {
+              const next = removePlayer({ ...cur, hostId }, peerId)
+              setAndBroadcast(next)
+            }
           }
         }),
       ]
 
       if (asHost) {
-        hostRef.current = true
         const seed = (Math.random() * 1e9) | 0
         const lobby = addPlayer(
           createLobbyState(session.selfId, seed),
@@ -193,11 +235,20 @@ export function useGame() {
         )
         setAndBroadcast(lobby)
       } else {
-        hostRef.current = false
-        session.send({ t: 'hello', name: trimmed, color })
+        // Peers already in room (rare race) — hello now; else wait for onPeerJoin.
+        if (session.getPeers().length > 0) startHelloRetry()
       }
     },
-    [broadcast, clearSession, color, name, refreshHost, setAndBroadcast],
+    [
+      broadcast,
+      clearSession,
+      color,
+      iAmHost,
+      name,
+      sendHello,
+      setAndBroadcast,
+      stopHelloRetry,
+    ],
   )
 
   useEffect(() => {
@@ -208,15 +259,16 @@ export function useGame() {
 
   useEffect(() => {
     if (!selfId || !state || view !== 'room') return
-    if (!hostRef.current || state.phase !== 'playing') return
+    if (state.hostId !== selfId || state.phase !== 'playing') return
     const id = window.setInterval(() => {
       const cur = stateRef.current
-      if (!cur || cur.phase !== 'playing' || !hostRef.current) return
+      const me = selfIdRef.current
+      if (!cur || !me || cur.phase !== 'playing' || cur.hostId !== me) return
       const next = tickRound(cur, Date.now())
       if (next !== cur) setAndBroadcast(next)
     }, 250)
     return () => clearInterval(id)
-  }, [selfId, state?.phase, view, setAndBroadcast])
+  }, [selfId, state?.phase, state?.hostId, view, setAndBroadcast])
 
   useEffect(() => {
     if (!state || !selfId) return
@@ -228,13 +280,13 @@ export function useGame() {
 
   const sendOrApply = useCallback(
     (local: (s: GameState) => GameState, msg: NetMsg) => {
-      if (hostRef.current && stateRef.current) {
+      if (iAmHost() && stateRef.current) {
         setAndBroadcast(local(stateRef.current))
       } else {
         sessionRef.current?.send(msg)
       }
     },
-    [setAndBroadcast],
+    [iAmHost, setAndBroadcast],
   )
 
   const createRoom = useCallback(() => {
@@ -252,17 +304,16 @@ export function useGame() {
   }, [selfId, state, sendOrApply])
 
   const start = useCallback(() => {
-    if (!hostRef.current || !state) return
+    if (!iAmHost() || !state) return
     if (Object.keys(state.players).length < 2) return
     setAndBroadcast(startRound(state, Date.now()))
-  }, [state, setAndBroadcast])
+  }, [iAmHost, state, setAndBroadcast])
 
   const playAgain = useCallback(() => {
-    if (!hostRef.current || !state || !selfId) return
+    if (!iAmHost() || !state || !selfId) return
     const players = Object.values(state.players)
-    const hostId = electHost([selfId, ...(sessionRef.current?.getPeers() ?? [])])
-    setAndBroadcast(rebuildLobby(hostId, players, (Math.random() * 1e9) | 0))
-  }, [selfId, state, setAndBroadcast])
+    setAndBroadcast(rebuildLobby(state.hostId, players, (Math.random() * 1e9) | 0))
+  }, [iAmHost, selfId, state, setAndBroadcast])
 
   const peelStart = useCallback(
     (victimId: string, edge: Edge, mode: PeelMode, along: number) => {

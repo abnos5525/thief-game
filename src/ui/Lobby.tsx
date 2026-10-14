@@ -57,7 +57,12 @@ export function Lobby({
           <span className="text-sm text-paper-dim">{players.length}/6</span>
         </div>
         {!state && (
-          <p className="animate-pulse text-sm text-paper-dim">Connecting…</p>
+          <p className="animate-pulse text-sm text-paper-dim">
+            Connecting to host… keep this tab open
+          </p>
+        )}
+        {state && !state.players[selfId] && (
+          <p className="animate-pulse text-sm text-paper-dim">Joining crew…</p>
         )}
         <ul className="space-y-2">
           {players.map((p) => (
