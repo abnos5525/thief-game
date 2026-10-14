@@ -140,7 +140,7 @@ export function Lobby({
           Leave room
         </button>
         <p className="text-center text-[10px] tracking-widest text-paper-dim/70 uppercase">
-          build relay-v3
+          build stitch-v4
         </p>
       </div>
     </div>

@@ -1,8 +1,11 @@
 import { mulberry32 } from '../lib/rng'
 import {
   ITEM_VALUE,
+  MAX_STEALS_PER_PEEL,
   PEEL_MAX,
   ROUND_MS,
+  SLAM_BOUNTY,
+  STITCHES_NEEDED,
   STUN_MS,
   type Edge,
   type GameState,
@@ -102,6 +105,8 @@ export function applyPeelStart(
     mode,
     amount: mode === 'kick' ? 0.18 : 0.06,
     along,
+    stitches: 0,
+    steals: 0,
   }
   return {
     ...state,
@@ -134,8 +139,13 @@ export function applySteal(state: GameState, peelId: string, itemId: string): Ga
   const thief = peel && state.players[peel.thiefId]
   const item = victim?.items.find((i) => i.id === itemId)
   if (!peel || !victim || !thief || !item) return state
+  const steals = peel.steals + 1
   return {
     ...state,
+    peels:
+      steals >= MAX_STEALS_PER_PEEL
+        ? state.peels.filter((p) => p.id !== peelId)
+        : state.peels.map((p) => (p.id === peelId ? { ...p, steals } : p)),
     players: {
       ...state.players,
       [victim.id]: { ...victim, items: victim.items.filter((i) => i.id !== itemId) },
@@ -144,16 +154,25 @@ export function applySteal(state: GameState, peelId: string, itemId: string): Ga
   }
 }
 
-export function applySlam(state: GameState, peelId: string, now: number): GameState {
+export function applyStitch(state: GameState, peelId: string, now: number): GameState {
   const peel = state.peels.find((p) => p.id === peelId)
   const thief = peel && state.players[peel.thiefId]
-  if (!peel || !thief) return state
+  const victim = peel && state.players[peel.victimId]
+  if (!peel || !thief || !victim) return state
+  const stitches = peel.stitches + 1
+  if (stitches < STITCHES_NEEDED[peel.mode]) {
+    return {
+      ...state,
+      peels: state.peels.map((p) => (p.id === peelId ? { ...p, stitches } : p)),
+    }
+  }
   return {
     ...state,
     peels: state.peels.filter((p) => p.id !== peelId),
     players: {
       ...state.players,
       [thief.id]: { ...thief, stunnedUntil: now + STUN_MS },
+      [victim.id]: { ...victim, score: victim.score + SLAM_BOUNTY },
     },
   }
 }

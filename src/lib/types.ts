@@ -1,4 +1,4 @@
-export const APP_ID = 'roompeelv3'
+export const APP_ID = 'roompeelv4'
 
 export type Edge = 'top' | 'right' | 'bottom' | 'left'
 export type PeelMode = 'quiet' | 'kick'
@@ -23,9 +23,17 @@ export const ITEM_EMOJI: Record<ItemKind, string> = {
 }
 
 export const ROUND_MS = 90_000
-export const STUN_MS = 2_000
+export const STUN_MS = 1_000
 export const MAX_PLAYERS = 6
 export const PEEL_MAX = 0.42
+/** A tear rips shut after this many steals. */
+export const MAX_STEALS_PER_PEEL = 1
+/** Swipes across the tear needed to stitch it shut. */
+export const STITCHES_NEEDED: Record<PeelMode, number> = { quiet: 3, kick: 2 }
+/** Victim reward for stitching a thief out. */
+export const SLAM_BOUNTY = 15
+/** Quiet tears stay a faint shimmer for the victim until this deep. */
+export const QUIET_REVEAL = 0.2
 
 export type Item = {
   id: string
@@ -52,6 +60,8 @@ export type Peel = {
   mode: PeelMode
   amount: number
   along: number
+  stitches: number
+  steals: number
 }
 
 export type GameState = {
@@ -68,7 +78,7 @@ export type NetMsg =
   | { t: 'hello'; name: string; color: string }
   | { t: 'ready'; ready: boolean }
   | { t: 'start' }
-  | { t: 'state'; state: GameState }
+  | { t: 'state'; state: GameState; at: number }
   | { t: 'ping' }
   | { t: 'sync' }
   | {
@@ -82,7 +92,7 @@ export type NetMsg =
   | { t: 'peelUpdate'; peelId: string; amount: number; along: number }
   | { t: 'peelEnd'; peelId: string }
   | { t: 'steal'; peelId: string; itemId: string }
-  | { t: 'slam'; peelId: string }
+  | { t: 'stitch'; peelId: string }
 
 export const PLAYER_COLORS = [
   '#e8a87c',

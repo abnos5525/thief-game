@@ -25,7 +25,7 @@ export function GameScreen({ game }: Props) {
         onPeelUpdate={game.peelUpdate}
         onPeelEnd={game.peelEnd}
         onSteal={game.steal}
-        onSlam={game.slam}
+        onStitch={game.stitch}
       />
 
       <Hud

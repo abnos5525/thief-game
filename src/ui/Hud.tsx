@@ -106,7 +106,7 @@ export function Hud({
 
       {stunned && (
         <div className="pointer-events-none mt-1 rounded-xl bg-danger/90 px-4 py-2 text-center font-display text-sm tracking-wide text-paper shadow-lg">
-          Stunned — hands shake, peel later
+          Frozen {(Math.max(0, me!.stunnedUntil - now) / 1000).toFixed(1)}s — peel later
         </div>
       )}
     </div>

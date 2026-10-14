@@ -98,8 +98,8 @@ export default function App() {
       </div>
 
       <p className="text-center text-xs leading-relaxed text-paper-dim">
-        Drag from the edges of your room. Quiet peels are slow. Door Kick is loud — and
-        slamable.
+        Drag from the edges. Quiet peels hide until deep. Door Kick is loud — zigzag
+        stitch to freeze the thief.
       </p>
     </div>
   )

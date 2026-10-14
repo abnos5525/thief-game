@@ -4,8 +4,8 @@ import {
   applyPeelEnd,
   applyPeelStart,
   applyPeelUpdate,
-  applySlam,
   applySteal,
+  applyStitch,
   createLobbyState,
   electHost,
   removePlayer,
@@ -26,6 +26,20 @@ import {
 
 function blankPlayer(id: string, name: string, color: string): Player {
   return { id, name, color, ready: false, score: 0, stunnedUntil: 0, items: [] }
+}
+
+/** Shift host-clock timestamps onto this device's clock. */
+function toLocalClock(s: GameState, skew: number): GameState {
+  if (Math.abs(skew) < 50) return s
+  const players: Record<string, Player> = {}
+  for (const [id, p] of Object.entries(s.players)) {
+    players[id] = p.stunnedUntil ? { ...p, stunnedUntil: p.stunnedUntil + skew } : p
+  }
+  return {
+    ...s,
+    roundEndsAt: s.roundEndsAt ? s.roundEndsAt + skew : 0,
+    players,
+  }
 }
 
 function rebuildLobby(hostId: string, players: Player[], seed: number): GameState {
@@ -74,7 +88,7 @@ export function useGame() {
   }, [])
 
   const broadcast = useCallback((next: GameState) => {
-    sessionRef.current?.send({ t: 'state', state: next })
+    sessionRef.current?.send({ t: 'state', state: next, at: Date.now() })
   }, [])
 
   const setAndBroadcast = useCallback(
@@ -197,8 +211,9 @@ export function useGame() {
           setPeerCount(session.getPeers().length)
 
           if (msg.t === 'state') {
-            stateRef.current = msg.state
-            setState(msg.state)
+            const local = toLocalClock(msg.state, Date.now() - msg.at)
+            stateRef.current = local
+            setState(local)
             setNetHint(null)
             if (msg.state.players[me]) stopHelloRetry()
             else if (!asHostRef.current) startHelloRetry()
@@ -251,8 +266,8 @@ export function useGame() {
             if (Object.keys(cur.players).length >= 2) next = startRound(cur, Date.now())
           } else if (msg.t === 'steal') {
             next = applySteal(cur, msg.peelId, msg.itemId)
-          } else if (msg.t === 'slam') {
-            next = applySlam(cur, msg.peelId, Date.now())
+          } else if (msg.t === 'stitch') {
+            next = applyStitch(cur, msg.peelId, Date.now())
           }
           if (next !== cur) setAndBroadcast(next)
         }),
@@ -421,10 +436,10 @@ export function useGame() {
       if (!selfId) return ''
       const now = Date.now()
       const peelId = `peel-${selfId}-${now}`
-      // Local + tiny relay (no full GameState broadcast).
-      patchLocal((s) =>
+      const next = patchLocal((s) =>
         applyPeelStart(s, selfId, victimId, edge, mode, along, now, peelId),
       )
+      if (!next?.peels.some((p) => p.id === peelId)) return ''
       relay({ t: 'peelStart', peelId, victimId, edge, mode, along })
       setKickArmed(false)
       return peelId
@@ -464,10 +479,10 @@ export function useGame() {
     [sendOrApply],
   )
 
-  const slam = useCallback(
+  const stitch = useCallback(
     (peelId: string) => {
       const now = Date.now()
-      sendOrApply((s) => applySlam(s, peelId, now), { t: 'slam', peelId })
+      sendOrApply((s) => applyStitch(s, peelId, now), { t: 'stitch', peelId })
       try {
         navigator.vibrate?.(30)
       } catch {
@@ -510,7 +525,7 @@ export function useGame() {
     peelUpdate,
     peelEnd,
     steal,
-    slam,
+    stitch,
   }
 }
 

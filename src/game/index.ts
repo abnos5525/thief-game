@@ -10,7 +10,7 @@ export {
   applyPeelUpdate,
   applyPeelEnd,
   applySteal,
-  applySlam,
+  applyStitch,
   tickRound,
   isStunned,
 } from './engine'
