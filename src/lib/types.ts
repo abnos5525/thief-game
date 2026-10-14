@@ -1,4 +1,4 @@
-export const APP_ID = 'room-peel-thief-v2'
+export const APP_ID = 'roompeelv3'
 
 export type Edge = 'top' | 'right' | 'bottom' | 'left'
 export type PeelMode = 'quiet' | 'kick'
@@ -70,6 +70,7 @@ export type NetMsg =
   | { t: 'start' }
   | { t: 'state'; state: GameState }
   | { t: 'ping' }
+  | { t: 'sync' }
   | {
       t: 'peelStart'
       peelId: string

@@ -189,10 +189,14 @@ export function useGame() {
             return
           }
 
-          if (msg.t === 'ping') return
-
           const cur = stateRef.current
           if (!cur || cur.hostId !== me) return
+
+          // Any joiner noise in lobby → push a fresh snapshot.
+          if (msg.t === 'ping' || msg.t === 'sync') {
+            if (cur.phase === 'lobby') broadcast(cur)
+            return
+          }
 
           let next = cur
           if (msg.t === 'hello') {
@@ -259,12 +263,16 @@ export function useGame() {
         }),
         session.onConnected(() => {
           setBrokerReady(true)
+          setNetHint(
+            asHostRef.current
+              ? `Relay up (${session.getBrokerCount()}) — share code`
+              : `Relay up (${session.getBrokerCount()}) — greeting host…`,
+          )
           if (asHostRef.current) {
-            setNetHint('Share the code — waiting for crew…')
             if (stateRef.current) broadcast(stateRef.current)
             return
           }
-          setNetHint('Joined relay — greeting host…')
+          session.send({ t: 'sync' })
           startHelloRetry()
         }),
       ]
@@ -274,7 +282,17 @@ export function useGame() {
         const s = sessionRef.current
         if (!s?.ready) return
         setPeerCount(s.getPeers().length)
+        setNetHint((h) =>
+          h?.startsWith('Relay up')
+            ? `Relay up (${s.getBrokerCount()})${
+                asHostRef.current ? ' — share code' : ' — greeting host…'
+              }`
+            : h,
+        )
         s.send({ t: 'ping' })
+        if (!asHostRef.current && !stateRef.current?.players[selfIdRef.current!]) {
+          s.send({ t: 'sync' })
+        }
 
         if (iAmHost() && stateRef.current) {
           if (stateRef.current.phase === 'lobby') broadcast(stateRef.current)
@@ -285,7 +303,7 @@ export function useGame() {
           const me = selfIdRef.current
           if (!me || !stateRef.current?.players[me]) startHelloRetry()
         }
-      }, 1200)
+      }, 1000)
 
       if (asHost) {
         const seed = (Math.random() * 1e9) | 0
