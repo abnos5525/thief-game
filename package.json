@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "gh-deploy": "tsc --noEmit && vite build --base=/thief-game/ && gh-pages -d dist -t true --nojekyll"
+    "gh-deploy": "tsc --noEmit && vite build --base=/thief-game/ && gh-pages -d dist"
   },
   "dependencies": {
     "mqtt": "^5.16.1",
