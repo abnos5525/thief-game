@@ -5,10 +5,7 @@ import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  base:
-    process.env.GH_PAGES === '1' || process.env.GITHUB_ACTIONS === 'true'
-      ? '/thief-game/'
-      : './',
+  base: './',
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },

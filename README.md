@@ -31,16 +31,15 @@ Open two browsers (or phone + desktop), create/join the same room.
 
 ## GitHub Pages
 
-Workflow deploys `dist/` to Pages on push to `main`.
+```bash
+pnpm gh-deploy
+```
+
+Builds with base `/thief-game/` and pushes `dist/` to the `gh-pages` branch.
+
+One-time setup: Settings → Pages → Source: **Deploy from a branch** → `gh-pages` / `(root)`.
 
 Site: `https://abnos5525.github.io/thief-game/`
-
-Local GH-base build:
-
-```bash
-# Windows PowerShell
-$env:GH_PAGES='1'; pnpm build
-```
 
 ## Controls
 
