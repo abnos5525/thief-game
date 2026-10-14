@@ -1,36 +1,36 @@
 import { PEEL_MAX, type Edge, type Item, type Peel, type PeelMode } from '@/lib/types'
 import type { CSSProperties } from 'react'
 
-/** Wider grab zone — mouse + touch friendly. */
-export const EDGE_ZONE = 56
-export const DOUBLE_MS = 320
-/** Keep peel open after release once dragged this far. */
-export const PEEL_HOLD_MIN = 0.1
-/** Wider loot catch band along the peel. */
-export const PEEL_BAND = 0.2
+export const DOUBLE_MS = 300
+export const PEEL_HOLD_MIN = 0.08
+export const PEEL_BAND = 0.22
 
 export function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n))
 }
 
+/** Responsive edge hit — % of the shorter side, clamped in px. */
+export function edgeZonePx(w: number, h: number) {
+  return clamp(Math.min(w, h) * 0.12, 48, 88)
+}
+
 export function hitEdge(x: number, y: number, w: number, h: number): Edge | null {
-  const nearT = y <= EDGE_ZONE
-  const nearB = y >= h - EDGE_ZONE
-  const nearL = x <= EDGE_ZONE
-  const nearR = x >= w - EDGE_ZONE
-  // Prefer the closest edge when in a corner.
-  const scores: [Edge, number][] = []
-  if (nearT) scores.push(['top', y])
-  if (nearB) scores.push(['bottom', h - y])
-  if (nearL) scores.push(['left', x])
-  if (nearR) scores.push(['right', w - x])
-  if (!scores.length) return null
-  scores.sort((a, b) => a[1] - b[1])
-  return scores[0]![0]
+  const z = edgeZonePx(w, h)
+  const dist: [Edge, number][] = [
+    ['top', y],
+    ['bottom', h - y],
+    ['left', x],
+    ['right', w - x],
+  ]
+  dist.sort((a, b) => a[1] - b[1])
+  const [edge, d] = dist[0]!
+  return d <= z ? edge : null
 }
 
 export function alongOf(edge: Edge, x: number, y: number, w: number, h: number) {
-  return edge === 'top' || edge === 'bottom' ? clamp(x / w, 0.08, 0.92) : clamp(y / h, 0.12, 0.92)
+  return edge === 'top' || edge === 'bottom'
+    ? clamp(x / w, 0.06, 0.94)
+    : clamp(y / h, 0.1, 0.9)
 }
 
 export function amountOf(
@@ -43,8 +43,8 @@ export function amountOf(
   h: number,
   mode: PeelMode,
 ) {
-  // Desktop mice travel less than thumbs — amplify inward drag.
-  const gain = mode === 'kick' ? 1.7 : 1.35
+  // Strong gain so a short mouse/finger drag opens a visible peel.
+  const gain = mode === 'kick' ? 2.1 : 1.75
   let raw = 0
   if (edge === 'top') raw = (y - sy) / h
   else if (edge === 'bottom') raw = (sy - y) / h
@@ -56,20 +56,20 @@ export function amountOf(
 export function inPeelBand(item: Item, peel: Peel) {
   const half = PEEL_BAND
   const a = peel.along
-  const pad = 0.02
+  const depth = peel.amount + 0.03
   if (peel.edge === 'left')
-    return item.x <= peel.amount + pad && item.y >= a - half && item.y <= a + half
+    return item.x <= depth && item.y >= a - half && item.y <= a + half
   if (peel.edge === 'right')
-    return item.x >= 1 - peel.amount - pad && item.y >= a - half && item.y <= a + half
+    return item.x >= 1 - depth && item.y >= a - half && item.y <= a + half
   if (peel.edge === 'top')
-    return item.y <= peel.amount + pad && item.x >= a - half && item.x <= a + half
-  return item.y >= 1 - peel.amount - pad && item.x >= a - half && item.x <= a + half
+    return item.y <= depth && item.x >= a - half && item.x <= a + half
+  return item.y >= 1 - depth && item.x >= a - half && item.x <= a + half
 }
 
 export function stripStyle(peel: Peel): CSSProperties {
-  const d = `${Math.max(peel.amount, 0.06) * 100}%`
+  const d = `${Math.max(peel.amount, 0.1) * 100}%`
   const along = `${peel.along * 100}%`
-  const thick = '48%'
+  const thick = '52%'
   if (peel.edge === 'left')
     return { left: 0, top: along, width: d, height: thick, transform: 'translateY(-50%)' }
   if (peel.edge === 'right')

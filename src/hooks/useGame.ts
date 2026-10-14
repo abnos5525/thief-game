@@ -86,6 +86,21 @@ export function useGame() {
     [broadcast],
   )
 
+  /** Local state patch — no MQTT full-state (used for smooth peels). */
+  const patchLocal = useCallback((fn: (s: GameState) => GameState) => {
+    const cur = stateRef.current
+    if (!cur) return null
+    const next = fn(cur)
+    if (next === cur) return cur
+    stateRef.current = next
+    setState(next)
+    return next
+  }, [])
+
+  const relay = useCallback((msg: NetMsg) => {
+    sessionRef.current?.send(msg)
+  }, [])
+
   const stopHelloRetry = useCallback(() => {
     if (helloTimerRef.current != null) {
       window.clearInterval(helloTimerRef.current)
@@ -190,10 +205,34 @@ export function useGame() {
             return
           }
 
+          // Lightweight peel sync — every client applies; never full-state flood.
+          if (msg.t === 'peelStart') {
+            patchLocal((s) =>
+              applyPeelStart(
+                s,
+                peerId,
+                msg.victimId,
+                msg.edge,
+                msg.mode,
+                msg.along,
+                Date.now(),
+                msg.peelId,
+              ),
+            )
+            return
+          }
+          if (msg.t === 'peelUpdate') {
+            patchLocal((s) => applyPeelUpdate(s, msg.peelId, msg.amount, msg.along))
+            return
+          }
+          if (msg.t === 'peelEnd') {
+            patchLocal((s) => applyPeelEnd(s, msg.peelId))
+            return
+          }
+
           const cur = stateRef.current
           if (!cur || cur.hostId !== me) return
 
-          // Any joiner noise in lobby → push a fresh snapshot.
           if (msg.t === 'ping' || msg.t === 'sync') {
             if (cur.phase === 'lobby') broadcast(cur)
             return
@@ -210,21 +249,6 @@ export function useGame() {
             next = engineSetReady(cur, peerId, msg.ready)
           } else if (msg.t === 'start') {
             if (Object.keys(cur.players).length >= 2) next = startRound(cur, Date.now())
-          } else if (msg.t === 'peelStart') {
-            next = applyPeelStart(
-              cur,
-              peerId,
-              msg.victimId,
-              msg.edge,
-              msg.mode,
-              msg.along,
-              Date.now(),
-              msg.peelId,
-            )
-          } else if (msg.t === 'peelUpdate') {
-            next = applyPeelUpdate(cur, msg.peelId, msg.amount, msg.along)
-          } else if (msg.t === 'peelEnd') {
-            next = applyPeelEnd(cur, msg.peelId)
           } else if (msg.t === 'steal') {
             next = applySteal(cur, msg.peelId, msg.itemId)
           } else if (msg.t === 'slam') {
@@ -321,6 +345,7 @@ export function useGame() {
       color,
       iAmHost,
       name,
+      patchLocal,
       setAndBroadcast,
       startHelloRetry,
       stopHelloRetry,
@@ -396,39 +421,35 @@ export function useGame() {
       if (!selfId) return ''
       const now = Date.now()
       const peelId = `peel-${selfId}-${now}`
-      sendOrApply(
-        (s) => applyPeelStart(s, selfId, victimId, edge, mode, along, now, peelId),
-        { t: 'peelStart', peelId, victimId, edge, mode, along },
+      // Local + tiny relay (no full GameState broadcast).
+      patchLocal((s) =>
+        applyPeelStart(s, selfId, victimId, edge, mode, along, now, peelId),
       )
+      relay({ t: 'peelStart', peelId, victimId, edge, mode, along })
       setKickArmed(false)
       return peelId
     },
-    [selfId, sendOrApply],
+    [selfId, patchLocal, relay],
   )
 
   const peelUpdate = useCallback(
     (peelId: string, amount: number, along: number) => {
-      // Host applies immediately; joiner throttles MQTT flood from mouse moves.
-      if (iAmHost()) {
-        sendOrApply(
-          (s) => applyPeelUpdate(s, peelId, amount, along),
-          { t: 'peelUpdate', peelId, amount, along },
-        )
-        return
-      }
+      // Thief already paints locally; only patch authoritative peels + rare net ticks.
+      patchLocal((s) => applyPeelUpdate(s, peelId, amount, along))
       const now = performance.now()
-      if (now - peelNetAt.current < 45) return
+      if (now - peelNetAt.current < 100) return
       peelNetAt.current = now
-      sessionRef.current?.send({ t: 'peelUpdate', peelId, amount, along })
+      relay({ t: 'peelUpdate', peelId, amount, along })
     },
-    [iAmHost, sendOrApply],
+    [patchLocal, relay],
   )
 
   const peelEnd = useCallback(
     (peelId: string) => {
-      sendOrApply((s) => applyPeelEnd(s, peelId), { t: 'peelEnd', peelId })
+      patchLocal((s) => applyPeelEnd(s, peelId))
+      relay({ t: 'peelEnd', peelId })
     },
-    [sendOrApply],
+    [patchLocal, relay],
   )
 
   const steal = useCallback(
