@@ -26,6 +26,7 @@ export default function App() {
         isHost={game.isHost}
         peerCount={game.peerCount}
         netHint={game.netHint}
+        brokerReady={game.brokerReady}
         onReady={game.toggleReady}
         onStart={game.start}
         onLeave={() => void game.leave()}

@@ -7,6 +7,7 @@ type Props = {
   isHost: boolean
   peerCount: number
   netHint: string | null
+  brokerReady: boolean
   onReady: () => void
   onStart: () => void
   onLeave: () => void
@@ -19,6 +20,7 @@ export function Lobby({
   isHost,
   peerCount,
   netHint,
+  brokerReady,
   onReady,
   onStart,
   onLeave,
@@ -61,14 +63,19 @@ export function Lobby({
           <span className="text-sm text-paper-dim">{players.length}/6</span>
         </div>
         <p className="text-xs text-paper-dim">
-          P2P links: <span className="text-paper">{peerCount}</span>
+          Relay:{' '}
+          <span className={brokerReady ? 'text-moss' : 'text-ember'}>
+            {brokerReady ? 'online' : 'connecting…'}
+          </span>
+          {' · '}
+          heard: <span className="text-paper">{peerCount}</span>
         </p>
         {netHint && (
           <p className="animate-pulse text-sm text-ember">{netHint}</p>
         )}
-        {!state && !netHint && (
+        {!state && (
           <p className="animate-pulse text-sm text-paper-dim">
-            Connecting to host… keep this tab open
+            Waiting for host snapshot…
           </p>
         )}
         {state && !state.players[selfId] && (
@@ -132,6 +139,9 @@ export function Lobby({
         >
           Leave room
         </button>
+        <p className="text-center text-[10px] tracking-widest text-paper-dim/70 uppercase">
+          build relay-v2
+        </p>
       </div>
     </div>
   )

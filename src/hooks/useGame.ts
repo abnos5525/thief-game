@@ -51,6 +51,7 @@ export function useGame() {
   const [error, setError] = useState<string | null>(null)
   const [peerCount, setPeerCount] = useState(0)
   const [netHint, setNetHint] = useState<string | null>(null)
+  const [brokerReady, setBrokerReady] = useState(false)
 
   const sessionRef = useRef<Session | null>(null)
   const stateRef = useRef<GameState | null>(null)
@@ -94,7 +95,6 @@ export function useGame() {
   const sendHello = useCallback(() => {
     const { name: n, color: c } = profileRef.current
     if (!n || !sessionRef.current) return
-    if (sessionRef.current.getPeers().length === 0) return
     sessionRef.current.send({ t: 'hello', name: n, color: c })
   }, [])
 
@@ -125,6 +125,7 @@ export function useGame() {
     asHostRef.current = false
     setPeerCount(0)
     setNetHint(null)
+    setBrokerReady(false)
     if (s) await s.leave()
   }, [stopHelloRetry])
 
@@ -170,24 +171,14 @@ export function useGame() {
       setView('room')
       setState(null)
       stateRef.current = null
-      setNetHint(asHost ? 'Waiting for players…' : 'Looking for host…')
-
-      const onPeerReady = () => {
-        setPeerCount(session.getPeers().length)
-        if (iAmHost() && stateRef.current) {
-          broadcast(stateRef.current)
-          return
-        }
-        if (!asHostRef.current) {
-          setNetHint('Peer found — joining…')
-          startHelloRetry()
-        }
-      }
+      setBrokerReady(false)
+      setNetHint(asHost ? 'Connecting relay…' : 'Connecting relay…')
 
       unsubsRef.current = [
         session.onMessage((msg: NetMsg, peerId: string) => {
           const me = selfIdRef.current
           if (!me) return
+          setPeerCount(session.getPeers().length)
 
           if (msg.t === 'state') {
             stateRef.current = msg.state
@@ -197,6 +188,8 @@ export function useGame() {
             else if (!asHostRef.current) startHelloRetry()
             return
           }
+
+          if (msg.t === 'ping') return
 
           const cur = stateRef.current
           if (!cur || cur.hostId !== me) return
@@ -234,7 +227,12 @@ export function useGame() {
           }
           if (next !== cur) setAndBroadcast(next)
         }),
-        session.onPeerJoin(onPeerReady),
+        session.onPeerJoin(() => {
+          setPeerCount(session.getPeers().length)
+          if (iAmHost() && stateRef.current?.phase === 'lobby') {
+            broadcast(stateRef.current)
+          }
+        }),
         session.onPeerLeave((peerId) => {
           setPeerCount(session.getPeers().length)
           const cur = stateRef.current
@@ -257,20 +255,28 @@ export function useGame() {
           }
         }),
         session.onJoinError((message) => {
-          setNetHint(`Connection issue: ${message}`)
+          setNetHint(`Relay issue: ${message}`)
+        }),
+        session.onConnected(() => {
+          setBrokerReady(true)
+          if (asHostRef.current) {
+            setNetHint('Share the code — waiting for crew…')
+            if (stateRef.current) broadcast(stateRef.current)
+            return
+          }
+          setNetHint('Joined relay — greeting host…')
+          startHelloRetry()
         }),
       ]
 
-      // Poll peers — catches connections even if a join event was missed.
+      // Heartbeat + lobby snapshot + hello retry safety net.
       syncTimerRef.current = window.setInterval(() => {
         const s = sessionRef.current
-        if (!s) return
-        const n = s.getPeers().length
-        setPeerCount(n)
-        if (n === 0) return
+        if (!s?.ready) return
+        setPeerCount(s.getPeers().length)
+        s.send({ t: 'ping' })
 
         if (iAmHost() && stateRef.current) {
-          // Lobby heartbeat so late joiners still get a snapshot.
           if (stateRef.current.phase === 'lobby') broadcast(stateRef.current)
           return
         }
@@ -279,7 +285,7 @@ export function useGame() {
           const me = selfIdRef.current
           if (!me || !stateRef.current?.players[me]) startHelloRetry()
         }
-      }, 1000)
+      }, 1200)
 
       if (asHost) {
         const seed = (Math.random() * 1e9) | 0
@@ -288,9 +294,6 @@ export function useGame() {
           blankPlayer(session.selfId, trimmed, color),
         )
         setAndBroadcast(lobby)
-        setNetHint('Share the code — waiting for crew…')
-      } else if (session.getPeers().length > 0) {
-        onPeerReady()
       }
     },
     [
@@ -448,6 +451,7 @@ export function useGame() {
     error,
     peerCount,
     netHint,
+    brokerReady,
     createRoom,
     joinRoom: joinRoomAction,
     leave,

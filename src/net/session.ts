@@ -1,4 +1,4 @@
-import { joinRoom, selfId } from 'trystero/mqtt'
+import mqtt, { type MqttClient } from 'mqtt'
 import { APP_ID, type NetMsg } from '@/lib/types'
 
 export type Session = {
@@ -9,83 +9,55 @@ export type Session = {
   onPeerJoin: (fn: (peerId: string) => void) => () => void
   onPeerLeave: (fn: (peerId: string) => void) => () => void
   onJoinError: (fn: (message: string) => void) => () => void
+  onConnected: (fn: () => void) => () => void
   getPeers: () => string[]
+  ready: boolean
 }
 
-type IceServer = {
-  urls: string | string[]
-  username?: string
-  credential?: string
+type Wire = {
+  v: 1
+  app: string
+  from: string
+  to?: string
+  msg: NetMsg
 }
 
-/** Free public TURN so peers behind different NATs can still connect. */
-const TURN: IceServer[] = [
-  {
-    urls: [
-      'turn:openrelay.metered.ca:80',
-      'turn:openrelay.metered.ca:443',
-      'turn:openrelay.metered.ca:443?transport=tcp',
-    ],
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
+const BROKERS = [
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://test.mosquitto.org:8081/mqtt',
 ]
 
-function isNetMsg(data: unknown): data is NetMsg {
-  return (
-    typeof data === 'object' &&
-    data !== null &&
-    typeof (data as { t?: unknown }).t === 'string'
-  )
+function makeId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+  }
+  return `p${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`.slice(0, 16)
 }
 
-/** Prefix keeps public-relay topics unique to this game. */
-export function roomTopic(roomCode: string): string {
-  return `room-peel-${roomCode}`
+function roomTopic(roomCode: string): string {
+  return `${APP_ID}/${roomCode}/bus`
 }
 
-type JoinRoomFn = (
-  config: {
-    appId: string
-    turnConfig?: IceServer[]
-  },
-  roomId: string,
-  onJoinError?: (details: { error: string; peerId: string }) => void,
-) => ReturnType<typeof joinRoom>
-
+/**
+ * Room sync over public MQTT WebSockets (no WebRTC).
+ * Works across phones/NATs where P2P often fails on GitHub Pages.
+ */
 export function createRoomSession({ roomCode }: { roomCode: string }): Session {
-  const topic = roomTopic(roomCode)
-  const joinErrors = new Set<(message: string) => void>()
-
-  // mqtt.d.ts is narrower than runtime (turnConfig + onJoinError exist in strategy/peer).
-  const join = joinRoom as unknown as JoinRoomFn
-  const room = join(
-    { appId: APP_ID, turnConfig: TURN },
-    topic,
-    ({ error, peerId }) => {
-      const message = peerId ? `${error} (${peerId.slice(0, 6)})` : error
-      for (const fn of joinErrors) fn(message)
-    },
-  )
-
-  const [sendRaw, onRaw] = room.makeAction<NetMsg>('rp')
+  const selfId = makeId()
+  const topic = roomTopic(roomCode.toUpperCase())
+  const seen = new Map<string, number>() // peerId -> lastSeen ms
 
   const msgFns = new Set<(msg: NetMsg, peerId: string) => void>()
   const joinFns = new Set<(peerId: string) => void>()
   const leaveFns = new Set<(peerId: string) => void>()
+  const errFns = new Set<(message: string) => void>()
+  const connectedFns = new Set<() => void>()
 
-  onRaw((data, peerId) => {
-    if (!isNetMsg(data)) return
-    for (const fn of msgFns) fn(data, peerId)
-  })
-
-  // Trystero replaces the handler — keep one fan-out wrapper.
-  room.onPeerJoin((peerId) => {
-    for (const fn of joinFns) fn(peerId)
-  })
-  room.onPeerLeave((peerId) => {
-    for (const fn of leaveFns) fn(peerId)
-  })
+  let ready = false
+  let client: MqttClient | null = null
+  let brokerIndex = 0
+  let closed = false
+  const queue: Wire[] = []
 
   const unsub =
     <T>(set: Set<T>, fn: T) =>
@@ -93,11 +65,123 @@ export function createRoomSession({ roomCode }: { roomCode: string }): Session {
       set.delete(fn)
     }
 
+  const touchPeer = (peerId: string) => {
+    const first = !seen.has(peerId)
+    seen.set(peerId, Date.now())
+    if (first) {
+      for (const fn of joinFns) fn(peerId)
+    }
+  }
+
+  const publish = (wire: Wire) => {
+    if (!client || !ready) {
+      queue.push(wire)
+      return
+    }
+    client.publish(topic, JSON.stringify(wire), { qos: 0 })
+  }
+
+  const flush = () => {
+    while (queue.length && client && ready) {
+      const wire = queue.shift()!
+      client.publish(topic, JSON.stringify(wire), { qos: 0 })
+    }
+  }
+
+  const connect = () => {
+    if (closed) return
+    const url = BROKERS[brokerIndex % BROKERS.length]!
+    brokerIndex++
+
+    const next = mqtt.connect(url, {
+      clientId: `rp-${selfId}`,
+      clean: true,
+      reconnectPeriod: 0,
+      connectTimeout: 8_000,
+      protocolVersion: 4,
+    })
+
+    client = next
+
+    next.on('connect', () => {
+      if (closed) {
+        next.end(true)
+        return
+      }
+      next.subscribe(topic, { qos: 0 }, (err) => {
+        if (err) {
+          for (const fn of errFns) fn(err.message)
+          next.end(true)
+          window.setTimeout(connect, 400)
+          return
+        }
+        ready = true
+        flush()
+        for (const fn of connectedFns) fn()
+      })
+    })
+
+    next.on('message', (_t, payload) => {
+      let wire: Wire
+      try {
+        wire = JSON.parse(payload.toString()) as Wire
+      } catch {
+        return
+      }
+      if (!wire || wire.v !== 1 || wire.app !== APP_ID || !wire.from || !wire.msg) return
+      if (wire.from === selfId) return
+      if (wire.to && wire.to !== selfId) return
+      touchPeer(wire.from)
+      for (const fn of msgFns) fn(wire.msg, wire.from)
+    })
+
+    next.on('error', (err) => {
+      for (const fn of errFns) fn(err.message || 'MQTT error')
+    })
+
+    next.on('close', () => {
+      if (client !== next) return
+      ready = false
+      client = null
+      if (!closed) window.setTimeout(connect, 600)
+    })
+  }
+
+  connect()
+
+  // Drop stale presence every few seconds.
+  const pruneTimer = window.setInterval(() => {
+    const now = Date.now()
+    for (const [id, at] of seen) {
+      if (now - at > 12_000) {
+        seen.delete(id)
+        for (const fn of leaveFns) fn(id)
+      }
+    }
+  }, 3000)
+
   return {
     selfId,
-    leave: () => room.leave(),
+    get ready() {
+      return ready
+    },
+    leave: async () => {
+      closed = true
+      window.clearInterval(pruneTimer)
+      queue.length = 0
+      const c = client
+      client = null
+      ready = false
+      if (c) await new Promise<void>((res) => c.end(true, {}, () => res()))
+    },
     send: (msg, target) => {
-      void sendRaw(msg, target)
+      publish({
+        v: 1,
+        app: APP_ID,
+        from: selfId,
+        to: target,
+        msg,
+      })
     },
     onMessage: (fn) => {
       msgFns.add(fn)
@@ -112,9 +196,14 @@ export function createRoomSession({ roomCode }: { roomCode: string }): Session {
       return unsub(leaveFns, fn)
     },
     onJoinError: (fn) => {
-      joinErrors.add(fn)
-      return unsub(joinErrors, fn)
+      errFns.add(fn)
+      return unsub(errFns, fn)
     },
-    getPeers: () => Object.keys(room.getPeers()),
+    onConnected: (fn) => {
+      connectedFns.add(fn)
+      if (ready) fn()
+      return unsub(connectedFns, fn)
+    },
+    getPeers: () => [...seen.keys()],
   }
 }

@@ -10,9 +10,9 @@
     "gh-deploy": "tsc --noEmit && vite build --base=/thief-game/ && gh-pages -d dist"
   },
   "dependencies": {
+    "mqtt": "^5.16.1",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "trystero": "^0.21.0"
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.4",
