@@ -61,6 +61,7 @@ export function useGame() {
   const syncTimerRef = useRef<number | null>(null)
   const profileRef = useRef({ name: '', color })
   const asHostRef = useRef(false)
+  const peelNetAt = useRef(0)
 
   stateRef.current = state
   selfIdRef.current = selfId
@@ -407,12 +408,20 @@ export function useGame() {
 
   const peelUpdate = useCallback(
     (peelId: string, amount: number, along: number) => {
-      sendOrApply(
-        (s) => applyPeelUpdate(s, peelId, amount, along),
-        { t: 'peelUpdate', peelId, amount, along },
-      )
+      // Host applies immediately; joiner throttles MQTT flood from mouse moves.
+      if (iAmHost()) {
+        sendOrApply(
+          (s) => applyPeelUpdate(s, peelId, amount, along),
+          { t: 'peelUpdate', peelId, amount, along },
+        )
+        return
+      }
+      const now = performance.now()
+      if (now - peelNetAt.current < 45) return
+      peelNetAt.current = now
+      sessionRef.current?.send({ t: 'peelUpdate', peelId, amount, along })
     },
-    [sendOrApply],
+    [iAmHost, sendOrApply],
   )
 
   const peelEnd = useCallback(

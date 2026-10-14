@@ -100,7 +100,7 @@ export function Hud({
               : 'bg-ink/70 text-paper-dim ring-1 ring-paper/15'
           }`}
         >
-          {kickArmed ? 'Door Kick armed' : 'Quiet peel'}
+          {kickArmed ? 'Door Kick ON' : 'Quiet peel'}
         </button>
       </div>
 
